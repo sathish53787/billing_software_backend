@@ -1,5 +1,6 @@
 import Expense, { EXPENSE_CATEGORIES } from './expense.model.js';
 import { RES_MESSAGE } from '../../Config/appConfig.js';
+import { tenantFilter, tenantStamp } from '../../Helpers/tenant.js';
 
 const round2 = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 
@@ -110,7 +111,7 @@ export const getExpenses = async (req, res) => {
     const limit = Math.min(100, Math.max(1, Number.isFinite(rawLimit) ? rawLimit : 10));
     const skip = (page - 1) * limit;
 
-    const filter = { userId };
+    const filter = { ...tenantFilter(req) };
 
     if (category && category !== 'All' && EXPENSE_CATEGORIES.includes(category)) {
       filter.category = category;
@@ -175,7 +176,7 @@ export const createExpense = async (req, res) => {
     }
 
     const expense = await Expense.create({
-      userId,
+      ...tenantStamp(req),
       ...parsed.data,
     });
 
@@ -205,7 +206,7 @@ export const updateExpense = async (req, res) => {
     }
 
     const expense = await Expense.findOneAndUpdate(
-      { _id: req.params.id, userId },
+      { _id: req.params.id, ...tenantFilter(req) },
       { $set: parsed.data },
       { new: true }
     )
@@ -238,7 +239,7 @@ export const deleteExpense = async (req, res) => {
 
     const expense = await Expense.findOneAndDelete({
       _id: req.params.id,
-      userId,
+      ...tenantFilter(req),
     })
       .lean()
       .exec();

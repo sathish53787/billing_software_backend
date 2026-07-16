@@ -1,4 +1,5 @@
 import User from './user.model.js';
+import Company from '../Company/company.model.js';
 import { RES_MESSAGE } from '../../Config/appConfig.js';
 import {
   comparePassword,
@@ -11,6 +12,7 @@ import {
   passwordValidation,
   phoneValidation,
 } from '../../Middleware/validation.js';
+import { normalizeAccessUrl } from '../../Helpers/tenant.js';
 
 export const register = async (req, res) => {
   try {
@@ -140,7 +142,7 @@ export const login = async (req, res) => {
       query.phone = normalizedPhone;
     }
 
-    const user = await User.findOne(query).exec();
+    const user = await User.findOne(query).populate('company').exec();
 
     if (!user) {
       return res.status(400).json({
@@ -162,6 +164,29 @@ export const login = async (req, res) => {
         success: false,
         message: RES_MESSAGE.VALIDATION.PASSWORD_MISMATCH,
       });
+    }
+
+    // Legacy: company doc exists by userId but user.company not linked
+    if (!user.company) {
+      const legacyCompany = await Company.findOne({ userId: user._id }).exec();
+      if (legacyCompany) {
+        if (!legacyCompany.access_url) {
+          let slug = normalizeAccessUrl(legacyCompany.companyName) || `company-${String(legacyCompany._id).slice(-6)}`;
+          const taken = await Company.findOne({
+            access_url: slug,
+            _id: { $ne: legacyCompany._id },
+          }).lean().exec();
+          if (taken) slug = `${slug}-${String(legacyCompany._id).slice(-4)}`;
+          legacyCompany.access_url = slug;
+          await legacyCompany.save();
+        }
+        user.company = legacyCompany;
+        user.is_company = true;
+        await User.updateOne(
+          { _id: user._id },
+          { company: legacyCompany._id, is_company: true }
+        ).exec();
+      }
     }
 
     const userResponse = user.toObject();
@@ -252,6 +277,7 @@ export const updateProfile = async (req, res) => {
       updatePayload,
       { new: true }
     )
+      .populate('company')
       .select('-password')
       .lean()
       .exec();

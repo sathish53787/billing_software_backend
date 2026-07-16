@@ -11,6 +11,12 @@ const foodItemSchema = mongoose.Schema(
       required: true,
       index: true,
     },
+    company: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Companies',
+      default: null,
+      index: true,
+    },
     itemName: { type: String, required: true, trim: true },
     category: {
       type: [{ type: String, enum: CATEGORIES }],

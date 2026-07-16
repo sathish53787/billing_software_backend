@@ -11,7 +11,15 @@ const companySchema = mongoose.Schema(
     },
     companyName: { type: String, required: true, trim: true },
     companyPhone: { type: String, required: true, trim: true },
-    address: { type: String, required: true, trim: true },
+    access_url: {
+      type: String,
+      required: true,
+      trim: true,
+      lowercase: true,
+      unique: true,
+      index: true,
+    },
+    address: { type: String, default: '', trim: true },
     companyLogo: { type: String, default: null },
     gstNo: { type: String, default: null, trim: true, uppercase: true },
     bankName: { type: String, default: null, trim: true },
@@ -20,6 +28,7 @@ const companySchema = mongoose.Schema(
     ifscCode: { type: String, default: null, trim: true, uppercase: true },
     upiId: { type: String, default: null, trim: true },
     upiName: { type: String, default: null, trim: true },
+    isActive: { type: Boolean, default: true },
   },
   { timestamps: true }
 );

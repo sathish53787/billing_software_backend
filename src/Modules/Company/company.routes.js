@@ -19,5 +19,6 @@ const uploadCompanyLogo = (req, res, next) => {
 
 router.route('/').get(VerifyAuth, companyCtrl.getCompany);
 router.route('/').put(VerifyAuth, uploadCompanyLogo, companyCtrl.saveCompany);
+router.route('/create').post(VerifyAuth, companyCtrl.createCompany);
 
 export default router;

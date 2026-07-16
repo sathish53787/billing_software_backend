@@ -14,6 +14,13 @@ const userSchema = mongoose.Schema(
       required: true,
       default: 'admin',
     },
+    company: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Companies',
+      default: null,
+      index: true,
+    },
+    is_company: { type: Boolean, default: false },
     account_deactivated: { type: Boolean, default: false },
   },
   { timestamps: true, strict: false }

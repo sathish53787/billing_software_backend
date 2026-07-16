@@ -2,17 +2,18 @@ import Order, { ORDER_TYPES } from './order.model.js';
 import Bill from '../Billing/bill.model.js';
 import FoodItem from '../FoodItem/foodItem.model.js';
 import { RES_MESSAGE } from '../../Config/appConfig.js';
+import { tenantFilter, tenantStamp } from '../../Helpers/tenant.js';
 
 const round2 = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 
-const createOrderNo = async (userId) => {
+const createOrderNo = async (req) => {
   const year = new Date().getFullYear();
-  const count = await Order.countDocuments({ userId }).exec();
+  const count = await Order.countDocuments(tenantFilter(req)).exec();
   return `ORD-${year}-${String(count + 1).padStart(4, '0')}`;
 };
 
-const createBillNo = async (userId) => {
-  const count = await Bill.countDocuments({ userId }).exec();
+const createBillNo = async (req) => {
+  const count = await Bill.countDocuments(tenantFilter(req)).exec();
   return String(count + 1).padStart(4, '0');
 };
 
@@ -140,7 +141,7 @@ const validateOrderMeta = (orderType, body) => {
   };
 };
 
-const buildOrderItems = async (userId, items = []) => {
+const buildOrderItems = async (req, items = []) => {
   if (!Array.isArray(items) || !items.length) {
     return { billItems: [], subtotal: 0, totalGst: 0, itemCount: 0 };
   }
@@ -152,7 +153,7 @@ const buildOrderItems = async (userId, items = []) => {
 
   const foodItems = await FoodItem.find({
     _id: { $in: foodIds },
-    userId,
+    ...tenantFilter(req),
     available: true,
   })
     .lean()
@@ -240,7 +241,7 @@ export const getOrders = async (req, res) => {
     const limit = Math.min(100, Math.max(1, Number.isFinite(rawLimit) ? rawLimit : 10));
     const skip = (page - 1) * limit;
 
-    const filter = { userId };
+    const filter = { ...tenantFilter(req) };
 
     if (status && status !== 'All') {
       filter.status = status;
@@ -285,7 +286,7 @@ export const getOrders = async (req, res) => {
     };
 
     // Counts for current date filter only (ignore type/status for chip counts)
-    const countFilter = { userId };
+    const countFilter = { ...tenantFilter(req) };
     if (filter.orderDate) countFilter.orderDate = filter.orderDate;
     const countOrders = await Order.find(countFilter).select('status orderType').lean().exec();
     countOrders.forEach((order) => {
@@ -326,7 +327,7 @@ export const getOrderById = async (req, res) => {
       });
     }
 
-    const order = await Order.findOne({ _id: req.params.id, userId }).lean().exec();
+    const order = await Order.findOne({ _id: req.params.id, ...tenantFilter(req) }).lean().exec();
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
@@ -356,7 +357,7 @@ export const createOrder = async (req, res) => {
     // One open draft per dine-in table
     if (orderType === 'Dine-In') {
       const existing = await Order.findOne({
-        userId,
+        ...tenantFilter(req),
         status: 'Draft',
         orderType: 'Dine-In',
         tableNumber: meta.data.tableNumber,
@@ -373,7 +374,7 @@ export const createOrder = async (req, res) => {
       }
     }
 
-    const orderNo = await createOrderNo(userId);
+    const orderNo = await createOrderNo(req);
     const extraCharges = calcExtraCharges(
       orderType,
       meta.data.packingCharge,
@@ -382,7 +383,7 @@ export const createOrder = async (req, res) => {
     const orderDate = parseOrderDate(req.body.orderDate);
 
     const order = await new Order({
-      userId,
+      ...tenantStamp(req),
       orderNo,
       orderType,
       orderDate,
@@ -417,7 +418,7 @@ export const updateOrder = async (req, res) => {
       });
     }
 
-    const order = await Order.findOne({ _id: req.params.id, userId }).exec();
+    const order = await Order.findOne({ _id: req.params.id, ...tenantFilter(req) }).exec();
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
@@ -443,7 +444,7 @@ export const updateOrder = async (req, res) => {
     }
 
     if (Array.isArray(req.body.items)) {
-      const built = await buildOrderItems(userId, req.body.items);
+      const built = await buildOrderItems(req, req.body.items);
       if (built.error) {
         return res.status(400).json({ success: false, message: built.error });
       }
@@ -480,7 +481,7 @@ export const generateBillFromOrder = async (req, res) => {
       });
     }
 
-    const order = await Order.findOne({ _id: req.params.id, userId }).exec();
+    const order = await Order.findOne({ _id: req.params.id, ...tenantFilter(req) }).exec();
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
@@ -499,7 +500,7 @@ export const generateBillFromOrder = async (req, res) => {
 
     // Re-validate items against current menu
     const rebuilt = await buildOrderItems(
-      userId,
+      req,
       order.items.map((item) => ({
         foodItemId: item.foodItemId,
         quantity: item.quantity,
@@ -518,9 +519,9 @@ export const generateBillFromOrder = async (req, res) => {
       rebuilt.itemCount
     );
 
-    const billNo = await createBillNo(userId);
+    const billNo = await createBillNo(req);
     const bill = await new Bill({
-      userId,
+      ...tenantStamp(req),
       billNo,
       customerName: buildCustomerLabel(order),
       billDate: order.orderDate || new Date(),
@@ -571,7 +572,7 @@ export const cancelOrder = async (req, res) => {
       });
     }
 
-    const order = await Order.findOne({ _id: req.params.id, userId }).exec();
+    const order = await Order.findOne({ _id: req.params.id, ...tenantFilter(req) }).exec();
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }

@@ -22,6 +22,12 @@ const expenseSchema = mongoose.Schema(
       required: true,
       index: true,
     },
+    company: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Companies',
+      default: null,
+      index: true,
+    },
     expenseDate: { type: Date, required: true, index: true },
     category: {
       type: String,

@@ -32,6 +32,12 @@ const orderSchema = mongoose.Schema(
       required: true,
       index: true,
     },
+    company: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Companies',
+      default: null,
+      index: true,
+    },
     orderNo: { type: String, required: true, trim: true },
     orderType: {
       type: String,

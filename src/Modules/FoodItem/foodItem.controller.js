@@ -1,5 +1,6 @@
 import FoodItem, { CATEGORIES, TYPES } from './foodItem.model.js';
 import { RES_MESSAGE } from '../../Config/appConfig.js';
+import { tenantFilter, tenantStamp } from '../../Helpers/tenant.js';
 
 const buildStats = (items = []) => {
   const vegItems = items.filter((item) => item.type === 'Veg').length;
@@ -79,8 +80,8 @@ const parseFoodPayload = (body) => {
   };
 };
 
-const listForUser = async (userId) => {
-  const items = await FoodItem.find({ userId }).sort({ createdAt: -1 }).lean().exec();
+const listForTenant = async (req) => {
+  const items = await FoodItem.find(tenantFilter(req)).sort({ createdAt: -1 }).lean().exec();
   return { items, stats: buildStats(items) };
 };
 
@@ -94,7 +95,7 @@ export const getFoodItems = async (req, res) => {
       });
     }
 
-    const { items, stats } = await listForUser(userId);
+    const { items, stats } = await listForTenant(req);
 
     return res.status(200).json({
       success: true,
@@ -123,11 +124,11 @@ export const createFoodItem = async (req, res) => {
     }
 
     const item = await new FoodItem({
-      userId,
+      ...tenantStamp(req),
       ...parsed.data,
     }).save();
 
-    const { items, stats } = await listForUser(userId);
+    const { items, stats } = await listForTenant(req);
 
     return res.status(201).json({
       success: true,
@@ -159,7 +160,7 @@ export const updateFoodItem = async (req, res) => {
     }
 
     const item = await FoodItem.findOneAndUpdate(
-      { _id: id, userId },
+      { _id: id, ...tenantFilter(req) },
       parsed.data,
       { new: true }
     )
@@ -173,7 +174,7 @@ export const updateFoodItem = async (req, res) => {
       });
     }
 
-    const { items, stats } = await listForUser(userId);
+    const { items, stats } = await listForTenant(req);
 
     return res.status(200).json({
       success: true,
@@ -199,7 +200,12 @@ export const deleteFoodItem = async (req, res) => {
       });
     }
 
-    const item = await FoodItem.findOneAndDelete({ _id: id, userId }).lean().exec();
+    const item = await FoodItem.findOneAndDelete({
+      _id: id,
+      ...tenantFilter(req),
+    })
+      .lean()
+      .exec();
 
     if (!item) {
       return res.status(404).json({
@@ -208,7 +214,7 @@ export const deleteFoodItem = async (req, res) => {
       });
     }
 
-    const { items, stats } = await listForUser(userId);
+    const { items, stats } = await listForTenant(req);
 
     return res.status(200).json({
       success: true,

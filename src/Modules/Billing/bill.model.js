@@ -28,6 +28,12 @@ const billSchema = mongoose.Schema(
       required: true,
       index: true,
     },
+    company: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Companies',
+      default: null,
+      index: true,
+    },
     billNo: { type: String, required: true, trim: true },
     customerName: { type: String, default: '', trim: true },
     billDate: { type: Date, default: Date.now },

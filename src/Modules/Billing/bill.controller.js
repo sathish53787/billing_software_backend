@@ -1,11 +1,13 @@
 import Bill from './bill.model.js';
+import Expense from '../Expense/expense.model.js';
 import FoodItem from '../FoodItem/foodItem.model.js';
 import { RES_MESSAGE } from '../../Config/appConfig.js';
+import { tenantFilter, tenantStamp } from '../../Helpers/tenant.js';
 
 const round2 = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 
-const createBillNo = async (userId) => {
-  const count = await Bill.countDocuments({ userId }).exec();
+const createBillNo = async (req) => {
+  const count = await Bill.countDocuments(tenantFilter(req)).exec();
   return String(count + 1).padStart(4, '0');
 };
 
@@ -19,7 +21,7 @@ export const getNextBillInfo = async (req, res) => {
       });
     }
 
-    const billNo = await createBillNo(userId);
+    const billNo = await createBillNo(req);
     const today = new Date();
     const billDate = today.toISOString().slice(0, 10);
 
@@ -43,7 +45,7 @@ export const getBills = async (req, res) => {
       });
     }
 
-    const bills = await Bill.find({ userId }).sort({ createdAt: -1 }).limit(20).lean().exec();
+    const bills = await Bill.find({ ...tenantFilter(req) }).sort({ createdAt: -1 }).limit(20).lean().exec();
 
     return res.status(200).json({
       success: true,
@@ -65,7 +67,7 @@ export const getBillById = async (req, res) => {
       });
     }
 
-    const bill = await Bill.findOne({ _id: req.params.id, userId }).lean().exec();
+    const bill = await Bill.findOne({ _id: req.params.id, ...tenantFilter(req) }).lean().exec();
     if (!bill) {
       return res.status(404).json({ success: false, message: 'Bill not found' });
     }
@@ -142,18 +144,51 @@ export const getDashboard = async (req, res) => {
       rangeStart < yesterdayBounds.start ? rangeStart : yesterdayBounds.start;
 
     const bills = await Bill.find({
-      userId,
+      ...tenantFilter(req),
       createdAt: { $gte: fetchStart, $lte: getIstDayBounds(weekEndStr).end },
     })
       .sort({ createdAt: -1 })
       .lean()
       .exec();
 
-    const recentBills = await Bill.find({ userId })
+    const recentBills = await Bill.find({ ...tenantFilter(req) })
       .sort({ createdAt: -1 })
       .limit(8)
       .lean()
       .exec();
+
+    const [recentExpenses, todayExpenseRows, yesterdayExpenseRows] = await Promise.all([
+      Expense.find(tenantFilter(req)).sort({ expenseDate: -1, createdAt: -1 }).limit(8).lean().exec(),
+      Expense.find({
+        ...tenantFilter(req),
+        expenseDate: { $gte: todayBounds.start, $lte: todayBounds.end },
+      })
+        .lean()
+        .exec(),
+      Expense.find({
+        ...tenantFilter(req),
+        expenseDate: { $gte: yesterdayBounds.start, $lte: yesterdayBounds.end },
+      })
+        .lean()
+        .exec(),
+    ]);
+
+    const sumExpenses = (list) =>
+      round2(list.reduce((sum, row) => sum + Number(row.amount || 0), 0));
+
+    const todayExpenses = sumExpenses(todayExpenseRows);
+    const yesterdayExpenses = sumExpenses(yesterdayExpenseRows);
+    const toExpenseDate = (value) => {
+      if (!value) return '';
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).formatToParts(new Date(value));
+      const get = (type) => parts.find((part) => part.type === type)?.value || '';
+      return `${get('year')}-${get('month')}-${get('day')}`;
+    };
 
     const summarize = (list) => {
       const revenue = round2(list.reduce((sum, bill) => sum + Number(bill.grandTotal || 0), 0));
@@ -266,6 +301,15 @@ export const getDashboard = async (req, res) => {
           ordersChange: today.orders - yesterday.orders,
           avgBillValue: today.avgBill,
           avgBillChangePct: pctChange(today.avgBill, yesterday.avgBill),
+          todayExpenses,
+          expenseChangePct: pctChange(todayExpenses, yesterdayExpenses),
+          expenseCount: todayExpenseRows.length,
+          expenseCountChange: todayExpenseRows.length - yesterdayExpenseRows.length,
+          netToday: round2(today.revenue - todayExpenses),
+          netChangePct: pctChange(
+            today.revenue - todayExpenses,
+            yesterday.revenue - yesterdayExpenses
+          ),
         },
         weeklyRevenue,
         categories,
@@ -279,6 +323,13 @@ export const getDashboard = async (req, res) => {
           customer: bill.customerName || '—',
           amount: Number(bill.grandTotal || 0),
           status: bill.status || 'Paid',
+        })),
+        recentExpenses: recentExpenses.map((expense) => ({
+          id: String(expense._id),
+          expenseDate: toExpenseDate(expense.expenseDate),
+          category: expense.category || '—',
+          description: expense.description || '',
+          amount: Number(expense.amount || 0),
         })),
       },
     });
@@ -319,13 +370,22 @@ export const getReports = async (req, res) => {
     const { start } = getIstDayBounds(fromDate);
     const { end } = getIstDayBounds(toDate);
 
-    const bills = await Bill.find({
-      userId,
-      createdAt: { $gte: start, $lte: end },
-    })
-      .sort({ createdAt: -1 })
-      .lean()
-      .exec();
+    const [bills, expenses] = await Promise.all([
+      Bill.find({
+        ...tenantFilter(req),
+        createdAt: { $gte: start, $lte: end },
+      })
+        .sort({ createdAt: -1 })
+        .lean()
+        .exec(),
+      Expense.find({
+        ...tenantFilter(req),
+        expenseDate: { $gte: start, $lte: end },
+      })
+        .sort({ expenseDate: -1, createdAt: -1 })
+        .lean()
+        .exec(),
+    ]);
 
     let grossSales = 0;
     let totalGst = 0;
@@ -342,7 +402,20 @@ export const getReports = async (req, res) => {
       Snacks: 0,
     };
     const itemMap = new Map();
+    const expenseByCategory = {};
     const dailyMap = new Map();
+
+    const toExpenseDate = (value) => {
+      if (!value) return '';
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).formatToParts(new Date(value));
+      const get = (type) => parts.find((part) => part.type === type)?.value || '';
+      return `${get('year')}-${get('month')}-${get('day')}`;
+    };
 
     const ensureDay = (dayStr) => {
       if (!dailyMap.has(dayStr)) {
@@ -355,12 +428,14 @@ export const getReports = async (req, res) => {
           revenue: 0,
           collected: 0,
           outstanding: 0,
+          expenses: 0,
+          expenseCount: 0,
+          net: 0,
         });
       }
       return dailyMap.get(dayStr);
     };
 
-    // Only include days that have bill activity
     bills.forEach((bill) => {
       const dayStr = getIstDayString(new Date(bill.createdAt));
       const day = ensureDay(dayStr);
@@ -407,15 +482,35 @@ export const getReports = async (req, res) => {
       });
     });
 
+    let totalExpenses = 0;
+    expenses.forEach((expense) => {
+      const amount = Number(expense.amount || 0);
+      totalExpenses = round2(totalExpenses + amount);
+      const cat = expense.category || 'Others';
+      expenseByCategory[cat] = round2((expenseByCategory[cat] || 0) + amount);
+
+      const dayStr = toExpenseDate(expense.expenseDate);
+      if (dayStr) {
+        const day = ensureDay(dayStr);
+        day.expenses = round2(day.expenses + amount);
+        day.expenseCount += 1;
+      }
+    });
+
+    [...dailyMap.values()].forEach((day) => {
+      day.net = round2(Number(day.collected || 0) - Number(day.expenses || 0));
+    });
+
     const billCount = bills.length;
+    const expenseCount = expenses.length;
     const avgBill = billCount ? round2(totalRevenue / billCount) : 0;
-    // Without item cost tracking: net profit ≈ collected sales minus outstanding risk
-    const netProfit = round2(collected);
+    // Net profit = collected sales minus recorded expenses; outstanding stays loss risk
+    const netProfit = round2(collected - totalExpenses);
     const netLoss = round2(outstanding);
-    const netPosition = round2(collected - outstanding);
+    const netPosition = round2(collected - outstanding - totalExpenses);
 
     const daily = [...dailyMap.values()]
-      .filter((day) => Number(day.bills) > 0)
+      .filter((day) => Number(day.bills) > 0 || Number(day.expenseCount) > 0)
       .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 
     const categorySum = Object.values(categoryTotals).reduce((a, b) => a + b, 0);
@@ -425,6 +520,16 @@ export const getReports = async (req, res) => {
       pct: categorySum ? `${round2((count / categorySum) * 100)}%` : '0%',
       color: CATEGORY_COLORS[name] || '#9ca3af',
     }));
+
+    const expenseCategories = Object.entries(expenseByCategory)
+      .map(([name, amount]) => ({
+        name,
+        amount,
+        pct: totalExpenses
+          ? `${round2((amount / totalExpenses) * 100)}%`
+          : '0%',
+      }))
+      .sort((a, b) => b.amount - a.amount);
 
     const topItems = [...itemMap.values()]
       .sort((a, b) => b.amount - a.amount)
@@ -447,12 +552,15 @@ export const getReports = async (req, res) => {
           collected,
           outstanding,
           avgBill,
+          totalExpenses,
+          expenseCount,
           netProfit,
           netLoss,
           netPosition,
         },
         daily,
         categories,
+        expenseCategories,
         topItems,
         bills: bills.map((bill) => ({
           billNo: bill.billNo,
@@ -463,6 +571,13 @@ export const getReports = async (req, res) => {
           totalGst: Number(bill.totalGst || 0),
           grandTotal: Number(bill.grandTotal || 0),
           status: bill.status || 'Paid',
+        })),
+        expenses: expenses.map((expense) => ({
+          id: String(expense._id),
+          expenseDate: toExpenseDate(expense.expenseDate),
+          category: expense.category || '—',
+          description: expense.description || '',
+          amount: Number(expense.amount || 0),
         })),
       },
     });
@@ -500,7 +615,7 @@ export const createBill = async (req, res) => {
 
     const foodItems = await FoodItem.find({
       _id: { $in: foodIds },
-      userId,
+      ...tenantFilter(req),
       available: true,
     })
       .lean()
@@ -553,7 +668,7 @@ export const createBill = async (req, res) => {
     subtotal = round2(subtotal);
     totalGst = round2(totalGst);
     const grandTotal = round2(subtotal + totalGst);
-    const billNo = await createBillNo(userId);
+    const billNo = await createBillNo(req);
     const parsedBillDate = billDate ? new Date(billDate) : new Date();
     if (Number.isNaN(parsedBillDate.getTime())) {
       return res.status(400).json({
@@ -563,7 +678,7 @@ export const createBill = async (req, res) => {
     }
 
     const bill = await new Bill({
-      userId,
+      ...tenantStamp(req),
       billNo,
       customerName: String(customerName || '').trim(),
       billDate: parsedBillDate,
