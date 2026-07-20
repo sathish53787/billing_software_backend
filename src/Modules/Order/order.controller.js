@@ -2,6 +2,7 @@ import Order, { ORDER_TYPES } from './order.model.js';
 import Bill from '../Billing/bill.model.js';
 import FoodItem from '../FoodItem/foodItem.model.js';
 import { RES_MESSAGE } from '../../Config/appConfig.js';
+import { nextBillNo } from '../../Helpers/billNo.js';
 import { tenantFilter, tenantStamp } from '../../Helpers/tenant.js';
 
 const round2 = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
@@ -10,11 +11,6 @@ const createOrderNo = async (req) => {
   const year = new Date().getFullYear();
   const count = await Order.countDocuments(tenantFilter(req)).exec();
   return `ORD-${year}-${String(count + 1).padStart(4, '0')}`;
-};
-
-const createBillNo = async (req) => {
-  const count = await Bill.countDocuments(tenantFilter(req)).exec();
-  return String(count + 1).padStart(4, '0');
 };
 
 const phoneOk = (value) => /^[6-9]\d{9}$/.test(String(value || '').replace(/\s/g, ''));
@@ -519,7 +515,7 @@ export const generateBillFromOrder = async (req, res) => {
       rebuilt.itemCount
     );
 
-    const billNo = await createBillNo(req);
+    const billNo = await nextBillNo(req);
     const bill = await new Bill({
       ...tenantStamp(req),
       billNo,

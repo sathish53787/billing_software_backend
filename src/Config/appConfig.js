@@ -55,5 +55,8 @@ export const RES_MESSAGE = {
   BILL: {
     FETCHED: 'Bills fetched successfully',
     CREATED: 'Bill generated successfully',
+    UPDATED: 'Bill updated successfully',
+    DELETED: 'Bill deleted successfully',
+    NOT_FOUND: 'Bill not found',
   },
 };

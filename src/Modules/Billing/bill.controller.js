@@ -1,14 +1,75 @@
 import Bill from './bill.model.js';
 import Expense from '../Expense/expense.model.js';
 import FoodItem from '../FoodItem/foodItem.model.js';
+import Order from '../Order/order.model.js';
 import { RES_MESSAGE } from '../../Config/appConfig.js';
+import { nextBillNo } from '../../Helpers/billNo.js';
 import { tenantFilter, tenantStamp } from '../../Helpers/tenant.js';
 
 const round2 = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 
-const createBillNo = async (req) => {
-  const count = await Bill.countDocuments(tenantFilter(req)).exec();
-  return String(count + 1).padStart(4, '0');
+const buildBillItemsFromPayload = async (req, items = []) => {
+  if (!Array.isArray(items) || !items.length) {
+    return { error: RES_MESSAGE.VALIDATION.BILL_ITEMS_REQUIRED };
+  }
+
+  const foodIds = items.map((item) => item.foodItemId).filter(Boolean);
+  if (foodIds.length !== items.length) {
+    return { error: RES_MESSAGE.VALIDATION.BILL_ITEMS_REQUIRED };
+  }
+
+  const foodItems = await FoodItem.find({
+    _id: { $in: foodIds },
+    ...tenantFilter(req),
+    available: true,
+  })
+    .lean()
+    .exec();
+
+  const foodMap = new Map(foodItems.map((item) => [String(item._id), item]));
+  const billItems = [];
+  let subtotal = 0;
+  let totalGst = 0;
+
+  for (const selected of items) {
+    const food = foodMap.get(String(selected.foodItemId));
+    if (!food) {
+      return { error: RES_MESSAGE.VALIDATION.BILL_ITEM_UNAVAILABLE };
+    }
+
+    const quantity = Number(selected.quantity);
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      return { error: RES_MESSAGE.VALIDATION.INVALID_BILL_QUANTITY };
+    }
+
+    const lineSubtotal = round2(food.price * quantity);
+    const gstAmount = round2((lineSubtotal * food.gstPercent) / 100);
+    const lineTotal = round2(lineSubtotal + gstAmount);
+
+    billItems.push({
+      foodItemId: food._id,
+      itemName: food.itemName,
+      type: food.type,
+      category: food.category,
+      price: food.price,
+      gstPercent: food.gstPercent,
+      quantity,
+      subtotal: lineSubtotal,
+      gstAmount,
+      lineTotal,
+    });
+
+    subtotal += lineSubtotal;
+    totalGst += gstAmount;
+  }
+
+  return {
+    billItems,
+    subtotal: round2(subtotal),
+    totalGst: round2(totalGst),
+    grandTotal: round2(subtotal + totalGst),
+    itemCount: billItems.reduce((sum, item) => sum + item.quantity, 0),
+  };
 };
 
 export const getNextBillInfo = async (req, res) => {
@@ -21,7 +82,7 @@ export const getNextBillInfo = async (req, res) => {
       });
     }
 
-    const billNo = await createBillNo(req);
+    const billNo = await nextBillNo(req);
     const today = new Date();
     const billDate = today.toISOString().slice(0, 10);
 
@@ -45,12 +106,51 @@ export const getBills = async (req, res) => {
       });
     }
 
-    const bills = await Bill.find({ ...tenantFilter(req) }).sort({ createdAt: -1 }).limit(20).lean().exec();
+    const page = Math.max(1, Number.parseInt(String(req.query.page || '1'), 10) || 1);
+    const rawLimit = Number.parseInt(
+      String(req.query.limit || req.query.count || '10'),
+      10
+    );
+    const limit = Math.min(100, Math.max(1, Number.isFinite(rawLimit) ? rawLimit : 10));
+    const skip = (page - 1) * limit;
+
+    const fromDate = String(req.query.from_date || '').trim();
+    const toDate = String(req.query.to_date || '').trim();
+    const filter = { ...tenantFilter(req) };
+
+    if (fromDate || toDate) {
+      const startStr = /^\d{4}-\d{2}-\d{2}$/.test(fromDate) ? fromDate : null;
+      const endStr = /^\d{4}-\d{2}-\d{2}$/.test(toDate) ? toDate : startStr;
+      if (startStr) {
+        const start = new Date(`${startStr}T00:00:00+05:30`);
+        const end = new Date(`${endStr}T23:59:59.999+05:30`);
+        filter.billDate = { $gte: start, $lte: end };
+      }
+    }
+
+    const [total, bills] = await Promise.all([
+      Bill.countDocuments(filter),
+      Bill.find(filter)
+        .sort({ billDate: -1, createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean()
+        .exec(),
+    ]);
+
+    const totalPages = Math.max(1, Math.ceil(total / limit) || 1);
 
     return res.status(200).json({
       success: true,
       message: RES_MESSAGE.BILL.FETCHED,
       bills,
+      pagination: {
+        page,
+        limit,
+        count: limit,
+        total,
+        totalPages,
+      },
     });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
@@ -598,77 +698,12 @@ export const createBill = async (req, res) => {
 
     const { items, customerName = '', status = 'Paid', billDate } = req.body;
 
-    if (!Array.isArray(items) || !items.length) {
-      return res.status(400).json({
-        success: false,
-        message: RES_MESSAGE.VALIDATION.BILL_ITEMS_REQUIRED,
-      });
+    const built = await buildBillItemsFromPayload(req, items);
+    if (built.error) {
+      return res.status(400).json({ success: false, message: built.error });
     }
 
-    const foodIds = items.map((item) => item.foodItemId).filter(Boolean);
-    if (foodIds.length !== items.length) {
-      return res.status(400).json({
-        success: false,
-        message: RES_MESSAGE.VALIDATION.BILL_ITEMS_REQUIRED,
-      });
-    }
-
-    const foodItems = await FoodItem.find({
-      _id: { $in: foodIds },
-      ...tenantFilter(req),
-      available: true,
-    })
-      .lean()
-      .exec();
-
-    const foodMap = new Map(foodItems.map((item) => [String(item._id), item]));
-
-    const billItems = [];
-    let subtotal = 0;
-    let totalGst = 0;
-
-    for (const selected of items) {
-      const food = foodMap.get(String(selected.foodItemId));
-      if (!food) {
-        return res.status(400).json({
-          success: false,
-          message: RES_MESSAGE.VALIDATION.BILL_ITEM_UNAVAILABLE,
-        });
-      }
-
-      const quantity = Number(selected.quantity);
-      if (!Number.isInteger(quantity) || quantity < 1) {
-        return res.status(400).json({
-          success: false,
-          message: RES_MESSAGE.VALIDATION.INVALID_BILL_QUANTITY,
-        });
-      }
-
-      const lineSubtotal = round2(food.price * quantity);
-      const gstAmount = round2((lineSubtotal * food.gstPercent) / 100);
-      const lineTotal = round2(lineSubtotal + gstAmount);
-
-      billItems.push({
-        foodItemId: food._id,
-        itemName: food.itemName,
-        type: food.type,
-        category: food.category,
-        price: food.price,
-        gstPercent: food.gstPercent,
-        quantity,
-        subtotal: lineSubtotal,
-        gstAmount,
-        lineTotal,
-      });
-
-      subtotal += lineSubtotal;
-      totalGst += gstAmount;
-    }
-
-    subtotal = round2(subtotal);
-    totalGst = round2(totalGst);
-    const grandTotal = round2(subtotal + totalGst);
-    const billNo = await createBillNo(req);
+    const billNo = await nextBillNo(req);
     const parsedBillDate = billDate ? new Date(billDate) : new Date();
     if (Number.isNaN(parsedBillDate.getTime())) {
       return res.status(400).json({
@@ -682,11 +717,11 @@ export const createBill = async (req, res) => {
       billNo,
       customerName: String(customerName || '').trim(),
       billDate: parsedBillDate,
-      items: billItems,
-      itemCount: billItems.reduce((sum, item) => sum + item.quantity, 0),
-      subtotal,
-      totalGst,
-      grandTotal,
+      items: built.billItems,
+      itemCount: built.itemCount,
+      subtotal: built.subtotal,
+      totalGst: built.totalGst,
+      grandTotal: built.grandTotal,
       status: status === 'Pending' ? 'Pending' : 'Paid',
     }).save();
 
@@ -702,6 +737,114 @@ export const createBill = async (req, res) => {
         message: 'Bill number conflict. Please try again.',
       });
     }
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const updateBill = async (req, res) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: RES_MESSAGE.VALIDATION.UNAUTHORIZED,
+      });
+    }
+
+    const bill = await Bill.findOne({
+      _id: req.params.id,
+      ...tenantFilter(req),
+    }).exec();
+
+    if (!bill) {
+      return res.status(404).json({
+        success: false,
+        message: RES_MESSAGE.BILL.NOT_FOUND,
+      });
+    }
+
+    const { items, customerName, status, billDate } = req.body;
+    const built = await buildBillItemsFromPayload(req, items);
+    if (built.error) {
+      return res.status(400).json({ success: false, message: built.error });
+    }
+
+    if (customerName !== undefined) {
+      bill.customerName = String(customerName || '').trim();
+    }
+    if (status !== undefined) {
+      bill.status = status === 'Pending' ? 'Pending' : 'Paid';
+    }
+    if (billDate !== undefined) {
+      const parsedBillDate = billDate ? new Date(billDate) : bill.billDate;
+      if (Number.isNaN(parsedBillDate.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid bill date',
+        });
+      }
+      bill.billDate = parsedBillDate;
+    }
+
+    bill.items = built.billItems;
+    bill.itemCount = built.itemCount;
+    bill.subtotal = built.subtotal;
+    bill.totalGst = built.totalGst;
+    bill.grandTotal = built.grandTotal;
+
+    await bill.save();
+
+    return res.status(200).json({
+      success: true,
+      message: RES_MESSAGE.BILL.UPDATED,
+      bill: bill.toObject(),
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const deleteBill = async (req, res) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: RES_MESSAGE.VALIDATION.UNAUTHORIZED,
+      });
+    }
+
+    const bill = await Bill.findOneAndDelete({
+      _id: req.params.id,
+      ...tenantFilter(req),
+    }).exec();
+
+    if (!bill) {
+      return res.status(404).json({
+        success: false,
+        message: RES_MESSAGE.BILL.NOT_FOUND,
+      });
+    }
+
+    if (bill.orderId) {
+      await Order.findOneAndUpdate(
+        { _id: bill.orderId, ...tenantFilter(req) },
+        {
+          $set: {
+            status: 'Draft',
+            billId: null,
+            billNo: null,
+          },
+        }
+      ).exec();
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: RES_MESSAGE.BILL.DELETED,
+      bill: bill.toObject(),
+    });
+  } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
