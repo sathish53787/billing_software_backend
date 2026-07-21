@@ -55,6 +55,38 @@ const calcExtraCharges = (orderType, packingCharge, deliveryCharge) => {
   return 0;
 };
 
+const normalizeTableNumber = (value) => String(value || '').trim().toLowerCase();
+
+const findActiveDineInDraftForTable = async (req, tableNumber, excludeOrderId = null) => {
+  const normalized = normalizeTableNumber(tableNumber);
+  if (!normalized) return null;
+
+  const drafts = await Order.find({
+    ...tenantFilter(req),
+    status: 'Draft',
+    orderType: 'Dine-In',
+  })
+    .select('_id tableNumber orderNo')
+    .lean()
+    .exec();
+
+  return (
+    drafts.find(
+      (order) =>
+        normalizeTableNumber(order.tableNumber) === normalized &&
+        String(order._id) !== String(excludeOrderId || '')
+    ) || null
+  );
+};
+
+const assertDineInTableAvailable = async (req, tableNumber, excludeOrderId = null) => {
+  const existing = await findActiveDineInDraftForTable(req, tableNumber, excludeOrderId);
+  if (!existing) return null;
+
+  const label = String(tableNumber || '').trim();
+  return `Table ${label} already has an active dine-in order (${existing.orderNo}). Bill or cancel it before starting a new one.`;
+};
+
 const validateOrderMeta = (orderType, body) => {
   if (!ORDER_TYPES.includes(orderType)) {
     return { error: 'Select a valid order type: Dine-In, Parcel, or Delivery' };
@@ -350,23 +382,11 @@ export const createOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: meta.error });
     }
 
-    // One open draft per dine-in table
+    // Block duplicate active dine-in drafts on the same table (billed tables are allowed)
     if (orderType === 'Dine-In') {
-      const existing = await Order.findOne({
-        ...tenantFilter(req),
-        status: 'Draft',
-        orderType: 'Dine-In',
-        tableNumber: meta.data.tableNumber,
-      })
-        .lean()
-        .exec();
-      if (existing) {
-        return res.status(200).json({
-          success: true,
-          message: 'Existing draft order found for this table',
-          order: existing,
-          resumed: true,
-        });
+      const tableError = await assertDineInTableAvailable(req, meta.data.tableNumber);
+      if (tableError) {
+        return res.status(400).json({ success: false, message: tableError });
       }
     }
 
@@ -397,7 +417,6 @@ export const createOrder = async (req, res) => {
       success: true,
       message: 'Order draft created',
       order: order.toObject(),
-      resumed: false,
     });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
@@ -437,6 +456,17 @@ export const updateOrder = async (req, res) => {
       }
       order.orderType = orderType;
       Object.assign(order, meta.data);
+
+      if (orderType === 'Dine-In') {
+        const tableError = await assertDineInTableAvailable(
+          req,
+          order.tableNumber,
+          order._id
+        );
+        if (tableError) {
+          return res.status(400).json({ success: false, message: tableError });
+        }
+      }
     }
 
     if (Array.isArray(req.body.items)) {
