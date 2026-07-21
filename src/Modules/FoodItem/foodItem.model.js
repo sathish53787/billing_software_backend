@@ -34,6 +34,7 @@ const foodItemSchema = mongoose.Schema(
     price: { type: Number, required: true, min: 0 },
     gstPercent: { type: Number, required: false, default: 0, min: 0, max: 100 },
     available: { type: Boolean, default: true },
+    sortOrder: { type: Number, default: 0, index: true },
   },
   { timestamps: true }
 );

@@ -50,6 +50,7 @@ export const RES_MESSAGE = {
     CREATED: 'Food item added successfully',
     UPDATED: 'Food item updated successfully',
     DELETED: 'Food item deleted successfully',
+    REORDERED: 'Food items reordered successfully',
     NOT_FOUND: 'Food item not found',
   },
   BILL: {

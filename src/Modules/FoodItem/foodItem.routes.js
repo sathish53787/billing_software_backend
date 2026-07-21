@@ -6,6 +6,7 @@ const router = express.Router();
 
 router.route('/').get(VerifyAuth, foodItemCtrl.getFoodItems);
 router.route('/').post(VerifyAuth, foodItemCtrl.createFoodItem);
+router.route('/reorder').put(VerifyAuth, foodItemCtrl.reorderFoodItems);
 router.route('/:id').put(VerifyAuth, foodItemCtrl.updateFoodItem);
 router.route('/:id').delete(VerifyAuth, foodItemCtrl.deleteFoodItem);
 

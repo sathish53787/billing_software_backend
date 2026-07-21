@@ -81,8 +81,20 @@ const parseFoodPayload = (body) => {
 };
 
 const listForTenant = async (req) => {
-  const items = await FoodItem.find(tenantFilter(req)).sort({ createdAt: -1 }).lean().exec();
+  const items = await FoodItem.find(tenantFilter(req))
+    .sort({ sortOrder: 1, createdAt: -1 })
+    .lean()
+    .exec();
   return { items, stats: buildStats(items) };
+};
+
+const nextSortOrder = async (req) => {
+  const last = await FoodItem.findOne(tenantFilter(req))
+    .sort({ sortOrder: -1 })
+    .select('sortOrder')
+    .lean()
+    .exec();
+  return (Number(last?.sortOrder) || 0) + 1;
 };
 
 export const getFoodItems = async (req, res) => {
@@ -126,6 +138,7 @@ export const createFoodItem = async (req, res) => {
     const item = await new FoodItem({
       ...tenantStamp(req),
       ...parsed.data,
+      sortOrder: await nextSortOrder(req),
     }).save();
 
     const { items, stats } = await listForTenant(req);
@@ -220,6 +233,72 @@ export const deleteFoodItem = async (req, res) => {
       success: true,
       message: RES_MESSAGE.FOOD.DELETED,
       item,
+      items,
+      stats,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const reorderFoodItems = async (req, res) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: RES_MESSAGE.VALIDATION.UNAUTHORIZED,
+      });
+    }
+
+    const orderedIds = Array.isArray(req.body?.orderedIds)
+      ? req.body.orderedIds.map((id) => String(id).trim()).filter(Boolean)
+      : [];
+
+    if (!orderedIds.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderedIds array is required',
+      });
+    }
+
+    const filter = tenantFilter(req);
+    const existing = await FoodItem.find(filter).select('_id').lean().exec();
+    const existingIds = new Set(existing.map((item) => String(item._id)));
+
+    if (orderedIds.length !== existing.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Send the full ordered list of food item ids',
+      });
+    }
+
+    const uniqueIds = new Set(orderedIds);
+    if (uniqueIds.size !== orderedIds.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Duplicate ids in orderedIds',
+      });
+    }
+
+    if (orderedIds.some((id) => !existingIds.has(id))) {
+      return res.status(400).json({
+        success: false,
+        message: 'One or more food items were not found',
+      });
+    }
+
+    await Promise.all(
+      orderedIds.map((id, index) =>
+        FoodItem.updateOne({ _id: id, ...filter }, { $set: { sortOrder: index } }).exec()
+      )
+    );
+
+    const { items, stats } = await listForTenant(req);
+
+    return res.status(200).json({
+      success: true,
+      message: RES_MESSAGE.FOOD.REORDERED,
       items,
       stats,
     });
